@@ -228,7 +228,7 @@ class KyurokuScene {
             e    => { console.error('kyuroku GLB error:', e); done(); }
         );
 
-        loader.load('/models/megaman_x_dive_mmexe_bug_style.glb',
+        loader.load('/models/bug_animated.glb',
             gltf => { this._onBugLoaded(gltf); done(); },
             null,
             e    => { console.error('bug GLB error:', e); done(); }
@@ -289,14 +289,14 @@ class KyurokuScene {
             }
         });
 
-        // 関節キャッシュ（Biped名 → 抽象名）
-        Object.entries(BIPED_MAP).forEach(([abstract, bipName]) => {
-            const obj = m.getObjectByName(bipName);
-            if (obj) this.bugJ[abstract] = obj;
-            else console.warn(`bug joint not found: ${bipName}`);
+        // AnimationMixer でアニメーション再生
+        this.bugMixer = new THREE.AnimationMixer(m);
+        this.bugClips = {};
+        gltf.animations.forEach(clip => {
+            this.bugClips[clip.name] = clip;
         });
-
-        console.log('bug GLB loaded. Joints:', Object.keys(this.bugJ));
+        this.bugCurrentClip = null;
+        console.log('bug GLB loaded. Clips:', Object.keys(this.bugClips));
     }
 
     // ================================================================
@@ -317,10 +317,11 @@ class KyurokuScene {
         this.matMap = isBug ? {}             : this.kyurokuMats;
 
         if (isBug) {
-            // バグフォーム: 元テクスチャを活かし、環境色のみ変える
-            // （emissive だけ追加してグローを与える）
+            // バグフォームに切り替えたら Idle アニメを開始
+            this.bugCurrentClip = null;
+            const stateMap = { idle:'Idle', running:'Run', talking:'Talk', listening:'Listen', thinking:'Think' };
+            this._bugPlayClip(stateMap[this.state] ?? 'Idle');
             if (this.bugMat) {
-                this.bugMat.emissive = this.bugMat.emissive ?? new THREE.Color(0);
                 this.bugMat.emissiveIntensity = 0.18;
             }
         } else {
@@ -355,7 +356,33 @@ class KyurokuScene {
         this.eyePt.color.setHex(c.eyePt);
     }
 
-    setState(state) { this.state = state; }
+    setState(state) {
+        this.state = state;
+        if (this.form === 'bug') {
+            const map = { idle:'Idle', running:'Run', talking:'Talk', listening:'Listen', thinking:'Think' };
+            this._bugPlayClip(map[state] ?? 'Idle');
+        }
+    }
+
+    // ── Bug モデル: アニメーションクリップ切り替え ────────────────────
+    _bugPlayClip(name) {
+        if (!this.bugMixer || !this.bugClips) return;
+        const clip = this.bugClips[name];
+        if (!clip) return;
+        if (this.bugCurrentClip === name) return;
+        this.bugCurrentClip = name;
+
+        const next = this.bugMixer.clipAction(clip);
+        next.setLoop(THREE.LoopRepeat, Infinity);
+        next.reset();
+
+        // 現在再生中のものをクロスフェード
+        const prev = this.bugMixer._actions.find(a => a.isRunning() && a !== next);
+        if (prev) {
+            next.crossFadeFrom(prev, 0.3, true);
+        }
+        next.play();
+    }
 
     // ================================================================
     // アニメーションループ
@@ -366,14 +393,20 @@ class KyurokuScene {
             const dt = Math.min(this.clock.getDelta(), 0.05);
             const t  = this.clock.getElapsedTime();
             if (this.model) {
-                this._blink(dt);
-                if (this.form !== 'bug') this._emblemPulse(t);
-                switch (this.state) {
-                    case 'running':   this._animRun(dt, t);  break;
-                    case 'talking':   this._animTalk(t);     break;
-                    case 'listening': this._animListen(t);   break;
-                    case 'thinking':  this._animThink(t);    break;
-                    default:          this._animIdle(t);     break;
+                if (this.form === 'bug') {
+                    // AnimationMixer で再生
+                    if (this.bugMixer) this.bugMixer.update(dt);
+                    this.bugModel.position.y = this.baseY.bug;
+                } else {
+                    this._blink(dt);
+                    this._emblemPulse(t);
+                    switch (this.state) {
+                        case 'running':   this._animRun(dt, t);  break;
+                        case 'talking':   this._animTalk(t);     break;
+                        case 'listening': this._animListen(t);   break;
+                        case 'thinking':  this._animThink(t);    break;
+                        default:          this._animIdle(t);     break;
+                    }
                 }
             }
             this.renderer.render(this.scene, this.camera);
