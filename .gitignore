@@ -54,3 +54,4 @@ Thumbs.db
 *.suo
 *.user
 *.sln.docstates
+.github/
