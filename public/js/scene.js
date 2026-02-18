@@ -269,13 +269,23 @@ class KyurokuScene {
     _onBugLoaded(gltf) {
         const m = gltf.scene;
 
-        // スケールを kyuroku の高さ（1.88）に合わせる
-        const box0 = new THREE.Box3().setFromObject(m);
-        const sz = new THREE.Vector3(); box0.getSize(sz);
-        if (sz.y > 0) m.scale.setScalar(1.88 / sz.y);
-
-        const box1 = new THREE.Box3().setFromObject(m);
-        m.position.y = -box1.min.y;
+        // Blender製GLBはSkinnedMeshの頂点がZ=-80にあり
+        // Box3.setFromObjectは幾何頂点ベースのため使えない。
+        // → ボーン（Bip*/Bone*ノード）のglTF-Y位置でキャラクター高さを計算する
+        m.updateMatrixWorld(true);
+        let minBoneY = Infinity, maxBoneY = -Infinity;
+        m.traverse(o => {
+            if (o.name && (o.name.startsWith('Bip') || o.name.startsWith('Bone'))) {
+                const wp = new THREE.Vector3();
+                o.getWorldPosition(wp);
+                if (wp.y < minBoneY) minBoneY = wp.y;
+                if (wp.y > maxBoneY) maxBoneY = wp.y;
+            }
+        });
+        const charH = maxBoneY - minBoneY;
+        const scale = (charH > 0.5) ? 1.88 / charH : 1.0;
+        m.scale.setScalar(scale);
+        m.position.y = -minBoneY * scale;  // 最低ボーンをY=0に
         this.baseY.bug = m.position.y;
         m.traverse(o => { if (o.isMesh) o.castShadow = true; });
         m.visible = (this.form === 'bug');
