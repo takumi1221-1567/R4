@@ -1,13 +1,14 @@
 // =====================================================================
-// scene.js — R4 KYUROKU.ainas  Three.js 3D Character  v6
-// Blender製GLB (kyuroku.glb) をGLTFLoaderでロード
-// オブジェクト名で関節を取得 → joint-based procedural animation
+// scene.js — R4 KYUROKU.ainas  Three.js 3D Character  v7
+// フォームごとにGLBを切り替え
+//   通常フォーム → kyuroku.glb  (Blender製, 独自リグ)
+//   バグフォーム → megaman_x_dive_mmexe_bug_style.glb  (Biped リグ)
 // =====================================================================
 'use strict';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-// ── フォームカラー（GLBマテリアル名 → 色） ─────────────────────────
+// ── フォームカラー ───────────────────────────────────────────────────
 const FC = {
     castoff: {
         Suit: 0x0c1828, Armor: 0x1e4e96, Trim: 0xc8a030,
@@ -67,6 +68,30 @@ const FC = {
     },
 };
 
+// Biped ボーン名 → 抽象関節名 マッピング
+const BIPED_MAP = {
+    Head:      'Bip Head_031',
+    Spine:     'Bip Spine1_010',
+    ThighL:    'Bip L Thigh_03',
+    ThighR:    'Bip R Thigh_06',
+    ShinL:     'Bip L Calf_04',
+    ShinR:     'Bip R Calf_07',
+    FootL:     'Bip L Foot_05',
+    FootR:     'Bip R Foot_08',
+    UpperArmL: 'Bip L UpperArm_012',
+    UpperArmR: 'Bip R UpperArm_035',
+    LowerArmL: 'Bip L Forearm_013',
+    LowerArmR: 'Bip R Forearm_036',
+    HandL:     'Bip L Hand_014',
+    HandR:     'Bip R Hand_037',
+};
+
+const KYUROKU_JOINTS = [
+    'Head','Spine',
+    'UpperArmL','UpperArmR','LowerArmL','LowerArmR','HandL','HandR',
+    'ThighL','ThighR','ShinL','ShinR','FootL','FootR',
+];
+
 // =====================================================================
 class KyurokuScene {
     constructor(canvas) {
@@ -78,25 +103,37 @@ class KyurokuScene {
         this.blinkTimer = 4 + Math.random() * 3;
         this.isBlinking = false;
         this.blinkT     = 0;
-        this.J          = {};   // joint Object3D refs
-        this.matMap     = {};   // material name → THREE.Material
-        this.model      = null;
+
+        // モデル参照
+        this.kyurokuModel = null;
+        this.bugModel     = null;
+        this.model        = null;   // アクティブモデル
+
+        // ジョイント・マテリアルキャッシュ（フォームで切り替え）
+        this.J      = {};   // 抽象関節名 → Object3D
+        this.matMap = {};   // マテリアル名 → THREE.Material
+
+        this.kyurokuJ    = {};
+        this.kyurokuMats = {};
+        this.bugJ        = {};
+        this.bugMat      = null;   // bug単一マテリアル
+        this.baseY       = { kyuroku: 0, bug: 0 };  // floor Y
 
         this._initRenderer();
         this._initScene();
-        this._loadGLB();
+        this._loadGLBs();
         this._startLoop();
     }
 
-    // ────────────────────────────────────────────────────────────────
+    // ── レンダラー ─────────────────────────────────────────────────────
     _initRenderer() {
         this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        this.renderer.shadowMap.enabled  = true;
-        this.renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
-        this.renderer.toneMapping        = THREE.ACESFilmicToneMapping;
+        this.renderer.shadowMap.enabled   = true;
+        this.renderer.shadowMap.type      = THREE.PCFSoftShadowMap;
+        this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
         this.renderer.toneMappingExposure = 1.15;
-        this.renderer.outputColorSpace   = THREE.SRGBColorSpace;
+        this.renderer.outputColorSpace    = THREE.SRGBColorSpace;
         this._resize();
         window.addEventListener('resize', () => this._resize());
     }
@@ -107,7 +144,7 @@ class KyurokuScene {
         if (this.camera) { this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
     }
 
-    // ────────────────────────────────────────────────────────────────
+    // ── シーン ─────────────────────────────────────────────────────────
     _initScene() {
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x060e1e);
@@ -172,62 +209,94 @@ class KyurokuScene {
     }
 
     // ================================================================
-    // GLBロード
+    // GLB ロード（2モデル並行）
     // ================================================================
-    _loadGLB() {
+    _loadGLBs() {
         const loader = new GLTFLoader();
         this._showLoading(true);
+        let count = 0;
+        const done = () => {
+            if (++count >= 2) {
+                this._showLoading(false);
+                this.setForm(this.form);   // 初期フォームカラー適用
+            }
+        };
+
         loader.load('/models/kyuroku.glb',
-            gltf => { this._showLoading(false); this._onLoaded(gltf); },
-            prog  => { if (prog.lengthComputable) this._setLoadingText(`${Math.round(prog.loaded/prog.total*100)}%`); },
-            err   => { console.error('GLB load error:', err); this._showLoading(false); }
+            gltf => { this._onKyurokuLoaded(gltf); done(); },
+            p    => { if (p.lengthComputable) this._setLoadingText(`${Math.round(p.loaded/p.total*100)}%`); },
+            e    => { console.error('kyuroku GLB error:', e); done(); }
+        );
+
+        loader.load('/models/megaman_x_dive_mmexe_bug_style.glb',
+            gltf => { this._onBugLoaded(gltf); done(); },
+            null,
+            e    => { console.error('bug GLB error:', e); done(); }
         );
     }
 
-    _onLoaded(gltf) {
-        this.model = gltf.scene;
+    // ── kyuroku.glb ロード完了 ──────────────────────────────────────
+    _onKyurokuLoaded(gltf) {
+        const m = gltf.scene;
+        m.rotation.y = Math.PI;  // Blender +Y → glTF -Z → 180°補正
+        const box = new THREE.Box3().setFromObject(m);
+        m.position.y = -box.min.y;
+        this.baseY.kyuroku = m.position.y;
+        m.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        m.visible = (this.form !== 'bug');
+        this.scene.add(m);
+        this.kyurokuModel = m;
 
-        // ── キャラクターをカメラの方向に向ける ──
-        // Blenderの+Y（前面）→ glTF -Z になるので 180° 回転で修正
-        this.model.rotation.y = Math.PI;
-
-        // ── スケール・位置を自動フィット ──
-        const box = new THREE.Box3().setFromObject(this.model);
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        // 高さ1.88をそのまま使う（ほぼ等身）
-        this.model.position.y = -box.min.y;
-
-        // 影
-        this.model.traverse(o => { if (o.isMesh) o.castShadow = true; });
-
-        this.scene.add(this.model);
-
-        // ── マテリアルを名前でキャッシュ ──
-        this.model.traverse(o => {
+        // マテリアルキャッシュ
+        m.traverse(o => {
             if (o.isMesh && o.material) {
-                const mats = Array.isArray(o.material) ? o.material : [o.material];
-                mats.forEach(m => { if (m.name) this.matMap[m.name] = m; });
+                (Array.isArray(o.material) ? o.material : [o.material])
+                    .forEach(mat => { if (mat.name) this.kyurokuMats[mat.name] = mat; });
             }
         });
 
-        // ── 関節オブジェクトをキャッシュ ──
-        const joints = [
-            'Head','Spine',
-            'UpperArmL','UpperArmR','LowerArmL','LowerArmR','HandL','HandR',
-            'ThighL','ThighR','ShinL','ShinR','FootL','FootR',
-        ];
-        joints.forEach(name => {
-            const obj = this.model.getObjectByName(name);
-            if (obj) this.J[name] = obj;
-            else console.warn(`Joint not found: ${name}`);
+        // 関節キャッシュ
+        KYUROKU_JOINTS.forEach(name => {
+            const obj = m.getObjectByName(name);
+            if (obj) this.kyurokuJ[name] = obj;
+            else console.warn(`kyuroku joint not found: ${name}`);
         });
 
-        // ── フォームカラー適用 ──
-        this.setForm(this.form);
+        console.log('kyuroku loaded. Joints:', Object.keys(this.kyurokuJ));
+    }
 
-        console.log('KYUROKU loaded. Joints:', Object.keys(this.J));
-        console.log('Materials:', Object.keys(this.matMap));
+    // ── bug GLB ロード完了 ──────────────────────────────────────────
+    _onBugLoaded(gltf) {
+        const m = gltf.scene;
+
+        // スケールを kyuroku の高さ（1.88）に合わせる
+        const box0 = new THREE.Box3().setFromObject(m);
+        const sz = new THREE.Vector3(); box0.getSize(sz);
+        if (sz.y > 0) m.scale.setScalar(1.88 / sz.y);
+
+        const box1 = new THREE.Box3().setFromObject(m);
+        m.position.y = -box1.min.y;
+        this.baseY.bug = m.position.y;
+        m.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        m.visible = (this.form === 'bug');
+        this.scene.add(m);
+        this.bugModel = m;
+
+        // マテリアル（単一: EXE_Dark）
+        m.traverse(o => {
+            if (o.isMesh && o.material && !this.bugMat) {
+                this.bugMat = Array.isArray(o.material) ? o.material[0] : o.material;
+            }
+        });
+
+        // 関節キャッシュ（Biped名 → 抽象名）
+        Object.entries(BIPED_MAP).forEach(([abstract, bipName]) => {
+            const obj = m.getObjectByName(bipName);
+            if (obj) this.bugJ[abstract] = obj;
+            else console.warn(`bug joint not found: ${bipName}`);
+        });
+
+        console.log('bug GLB loaded. Joints:', Object.keys(this.bugJ));
     }
 
     // ================================================================
@@ -235,34 +304,50 @@ class KyurokuScene {
     // ================================================================
     setForm(formKey) {
         this.form = formKey;
+        const isBug = formKey === 'bug';
         const c = FC[formKey] ?? FC.castoff;
 
-        // マテリアル色更新
-        const MAT_KEYS = ['Suit','Armor','Trim','Visor','Eye','EmbA','EmbB'];
-        MAT_KEYS.forEach(k => {
-            const m = this.matMap[k];
-            if (!m) return;
-            m.color.setHex(c[k]);
-        });
-        // Visor / Eye エミッシブ
-        if (this.matMap['Visor']) {
-            this.matMap['Visor'].emissive.setHex(c.visorEmi);
-            this.matMap['Visor'].emissiveIntensity = 0.8;
-        }
-        if (this.matMap['Eye']) {
-            this.matMap['Eye'].emissive.setHex(c.eyeEmi);
-            this.matMap['Eye'].emissiveIntensity = 1.6;
-        }
-        if (this.matMap['EmbA']) { this.matMap['EmbA'].emissive.setHex(c.EmbA); this.matMap['EmbA'].emissiveIntensity = 1.0; }
-        if (this.matMap['EmbB']) { this.matMap['EmbB'].emissive.setHex(c.EmbB); this.matMap['EmbB'].emissiveIntensity = 1.0; }
+        // モデル表示切り替え
+        if (this.kyurokuModel) this.kyurokuModel.visible = !isBug;
+        if (this.bugModel)     this.bugModel.visible = isBug;
 
-        // 顔の表示切り替え
-        ['Face','EyeL','EyeR','Mouth','VisorBar','HairBack','HairSideL','HairSideR'].forEach(n => {
-            const o = this.model?.getObjectByName(n);
-            if (o) o.visible = c.showFace !== false;
-        });
+        // アクティブ参照の更新
+        this.model  = isBug ? this.bugModel  : this.kyurokuModel;
+        this.J      = isBug ? this.bugJ      : this.kyurokuJ;
+        this.matMap = isBug ? {}             : this.kyurokuMats;
 
-        // 環境
+        if (isBug) {
+            // バグフォーム: 元テクスチャを活かし、環境色のみ変える
+            // （emissive だけ追加してグローを与える）
+            if (this.bugMat) {
+                this.bugMat.emissive = this.bugMat.emissive ?? new THREE.Color(0);
+                this.bugMat.emissiveIntensity = 0.18;
+            }
+        } else {
+            // kyuroku フォーム: マテリアル色を変える
+            const MAT_KEYS = ['Suit','Armor','Trim','Visor','Eye','EmbA','EmbB'];
+            MAT_KEYS.forEach(k => {
+                const mat = this.matMap[k];
+                if (mat) mat.color.setHex(c[k]);
+            });
+            if (this.matMap['Visor']) {
+                this.matMap['Visor'].emissive.setHex(c.visorEmi);
+                this.matMap['Visor'].emissiveIntensity = 0.8;
+            }
+            if (this.matMap['Eye']) {
+                this.matMap['Eye'].emissive.setHex(c.eyeEmi);
+                this.matMap['Eye'].emissiveIntensity = 1.6;
+            }
+            if (this.matMap['EmbA']) { this.matMap['EmbA'].emissive.setHex(c.EmbA); this.matMap['EmbA'].emissiveIntensity = 1.0; }
+            if (this.matMap['EmbB']) { this.matMap['EmbB'].emissive.setHex(c.EmbB); this.matMap['EmbB'].emissiveIntensity = 1.0; }
+
+            ['Face','EyeL','EyeR','Mouth','VisorBar','HairBack','HairSideL','HairSideR'].forEach(n => {
+                const o = this.kyurokuModel?.getObjectByName(n);
+                if (o) o.visible = c.showFace !== false;
+            });
+        }
+
+        // 環境（共通）
         this.ambientLight.color.setHex(c.ambient);
         this.scene.fog.color.setHex(c.fog);
         this.scene.background.setHex(c.fog);
@@ -282,13 +367,13 @@ class KyurokuScene {
             const t  = this.clock.getElapsedTime();
             if (this.model) {
                 this._blink(dt);
-                this._emblemPulse(t);
+                if (this.form !== 'bug') this._emblemPulse(t);
                 switch (this.state) {
-                    case 'running':   this._animRun(dt, t);     break;
-                    case 'talking':   this._animTalk(t);        break;
-                    case 'listening': this._animListen(t);      break;
-                    case 'thinking':  this._animThink(t);       break;
-                    default:          this._animIdle(t);        break;
+                    case 'running':   this._animRun(dt, t);  break;
+                    case 'talking':   this._animTalk(t);     break;
+                    case 'listening': this._animListen(t);   break;
+                    case 'thinking':  this._animThink(t);    break;
+                    default:          this._animIdle(t);     break;
                 }
             }
             this.renderer.render(this.scene, this.camera);
@@ -303,24 +388,41 @@ class KyurokuScene {
             this.isBlinking = true; this.blinkT = 0;
             this.blinkTimer = 4 + Math.random() * 3.5;
         }
-        if (this.isBlinking) {
-            this.blinkT += dt * 9;
-            const sy = this.blinkT < Math.PI ? Math.max(0.05, 1 - Math.sin(this.blinkT) * 7) : 1;
-            ['EyeL','EyeR'].forEach(n => {
-                const o = this.model?.getObjectByName(n);
-                if (o) o.scale.z = sy;   // Blender Y → Three.js Z after Y-up
+        if (!this.isBlinking) return;
+
+        this.blinkT += dt * 9;
+        const sy = this.blinkT < Math.PI ? Math.max(0.05, 1 - Math.sin(this.blinkT) * 7) : 1;
+
+        if (this.form === 'bug') {
+            // Biped eyelid ボーンをスケール
+            ['Bone Eyelid_L_032','Bone Eyelid_R_033'].forEach(n => {
+                const o = this.bugModel?.getObjectByName(n);
+                if (o) o.scale.y = sy;
             });
-            if (this.blinkT >= Math.PI) {
-                this.isBlinking = false;
+        } else {
+            ['EyeL','EyeR'].forEach(n => {
+                const o = this.kyurokuModel?.getObjectByName(n);
+                if (o) o.scale.z = sy;
+            });
+        }
+
+        if (this.blinkT >= Math.PI) {
+            this.isBlinking = false;
+            if (this.form === 'bug') {
+                ['Bone Eyelid_L_032','Bone Eyelid_R_033'].forEach(n => {
+                    const o = this.bugModel?.getObjectByName(n);
+                    if (o) o.scale.y = 1;
+                });
+            } else {
                 ['EyeL','EyeR'].forEach(n => {
-                    const o = this.model?.getObjectByName(n);
+                    const o = this.kyurokuModel?.getObjectByName(n);
                     if (o) o.scale.z = 1;
                 });
             }
         }
     }
 
-    // ── エンブレム脈動 ────────────────────────────────────────────────
+    // ── エンブレム脈動（kyuroku のみ） ───────────────────────────────
     _emblemPulse(t) {
         const p = 0.85 + Math.sin(t * 2.5) * 0.32;
         ['EmbA','EmbB'].forEach(k => { if (this.matMap[k]) this.matMap[k].emissiveIntensity = p; });
@@ -330,10 +432,10 @@ class KyurokuScene {
     // ── 関節リセット ─────────────────────────────────────────────────
     _reset() {
         if (!this.model) return;
-        this.model.position.y = -( new THREE.Box3().setFromObject(this.model).min.y );
-        // ※モデルのY位置は固定するので rotation だけリセット
-        this.model.rotation.set(0, Math.PI, 0);
-
+        const baseY = (this.form === 'bug') ? this.baseY.bug : this.baseY.kyuroku;
+        this.model.position.y = baseY;
+        // bug モデルは向きを変えない（Sketchfab標準向き）、kyuroku は 180°補正
+        this.model.rotation.set(0, this.form === 'bug' ? 0 : Math.PI, 0);
         Object.values(this.J).forEach(j => j.rotation.set(0, 0, 0));
     }
 
@@ -344,10 +446,9 @@ class KyurokuScene {
         const bob = Math.sin(t * 1.1) * 0.018;
         if (this.model) this.model.position.y += bob;
 
-        if (J.Head) { J.Head.rotation.y = Math.sin(t * 0.66) * 0.07; J.Head.rotation.z = Math.sin(t * 0.52) * 0.03; }
+        if (J.Head)  { J.Head.rotation.y = Math.sin(t * 0.66) * 0.07; J.Head.rotation.z = Math.sin(t * 0.52) * 0.03; }
         if (J.Spine) J.Spine.rotation.x = Math.sin(t * 0.7) * 0.008;
 
-        // 腕を自然に下ろす
         if (J.UpperArmL) { J.UpperArmL.rotation.z =  0.10; J.UpperArmL.rotation.x = 0.06; }
         if (J.UpperArmR) { J.UpperArmR.rotation.z = -0.10; J.UpperArmR.rotation.x = 0.06; }
         if (J.LowerArmL) J.LowerArmL.rotation.x = 0.12;
@@ -364,10 +465,9 @@ class KyurokuScene {
         const bob = Math.abs(Math.sin(ph)) * 0.055 - 0.022;
         if (this.model) this.model.position.y += bob;
 
-        if (J.Spine) J.Spine.rotation.x  = -0.14;
-        if (J.Head)  { J.Head.rotation.x  =  0.10; }
+        if (J.Spine) J.Spine.rotation.x = -0.14;
+        if (J.Head)  J.Head.rotation.x  =  0.10;
 
-        // 脚（モデルはY軸180°回転済みなのでX回転の符号はそのまま）
         if (J.ThighL) J.ThighL.rotation.x =  Math.sin(ph) * 0.70;
         if (J.ThighR) J.ThighR.rotation.x = -Math.sin(ph) * 0.70;
         if (J.ShinL)  J.ShinL.rotation.x  =  Math.max(0, -Math.sin(ph)) * 0.85;
@@ -375,7 +475,6 @@ class KyurokuScene {
         if (J.FootL)  J.FootL.rotation.x  = -0.20 + Math.sin(ph) * 0.20;
         if (J.FootR)  J.FootR.rotation.x  = -0.20 - Math.sin(ph) * 0.20;
 
-        // 腕（逆位相）
         if (J.UpperArmL) { J.UpperArmL.rotation.x = -Math.sin(ph) * 0.60; J.UpperArmL.rotation.z =  0.16; }
         if (J.UpperArmR) { J.UpperArmR.rotation.x =  Math.sin(ph) * 0.60; J.UpperArmR.rotation.z = -0.16; }
         if (J.LowerArmL) J.LowerArmL.rotation.x = 0.45 + Math.max(0,  Math.sin(ph)) * 0.45;
@@ -387,7 +486,7 @@ class KyurokuScene {
         this._reset();
         const J = this.J;
         if (this.model) this.model.position.y += Math.sin(t * 4.2) * 0.012;
-        if (J.Head) { J.Head.rotation.x = Math.sin(t * 4.2) * 0.13; J.Head.rotation.y = Math.sin(t * 2.6) * 0.09; }
+        if (J.Head)  { J.Head.rotation.x = Math.sin(t * 4.2) * 0.13; J.Head.rotation.y = Math.sin(t * 2.6) * 0.09; }
         if (J.Spine) J.Spine.rotation.x = -0.06;
         if (J.UpperArmR) { J.UpperArmR.rotation.x = -0.58 + Math.sin(t * 4.2) * 0.16; J.UpperArmR.rotation.z = -0.32; }
         if (J.LowerArmR) J.LowerArmR.rotation.x = 0.70 + Math.sin(t * 4.2) * 0.14;
