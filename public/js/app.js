@@ -231,14 +231,7 @@ function cycleForm() {
 function setForm(formKey) {
     currentForm = formKey;
     updateModeUI();
-
-    // 3Dシーンのアンビエントライト色を変更
-    if (window.kyurokuScene?.scene) {
-        const envColor = FORM_ENV[formKey] ?? 0x1a3060;
-        window.kyurokuScene.scene.traverse(obj => {
-            if (obj.isAmbientLight) obj.color.setHex(envColor);
-        });
-    }
+    window.kyurokuScene?.setForm(formKey);
 }
 
 function updateModeUI() {
