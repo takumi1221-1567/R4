@@ -1,0 +1,9 @@
+# =====================================================================
+# wrangler.toml — R4 Project Cloudflare Pages
+# =====================================================================
+name = "r4-kyuroku"
+pages_build_output_dir = "public"
+compatibility_date = "2025-01-01"
+
+# GEMINI_API_KEY は Dashboard > r4-kyuroku > Settings > Environment Variables
+# または: npx wrangler pages secret put GEMINI_API_KEY --project-name=r4-kyuroku
